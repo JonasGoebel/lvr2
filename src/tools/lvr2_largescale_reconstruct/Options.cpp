@@ -209,6 +209,12 @@ Options::Options(int argc, char** argv) : BaseOption(argc, argv)
      "Available Options: 'minimal', 'moderate', 'unbounded' or a number in [0, 2].\n"
      "Less Memory used always means more time required to generate tiles.")
 
+    ("vertexColors,C", bool_switch(&m_options.vertexColors),
+     "Transfer point cloud colors to mesh vertex colors using nearest-neighbor lookup. "
+     "Only has an effect if the input point cloud contains color data. "
+     "Colors are stored as 'v:color' (float RGB [0,1]) in the HDF5 chunk groups, "
+     "compatible with lvr2_3dtiles.")
+
     ;
 
     try

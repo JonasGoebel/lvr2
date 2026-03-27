@@ -786,7 +786,7 @@ lvr2::ucharArr BigGrid<BaseVecT>::colors(const BoundingBox<BaseVecT> &bb, size_t
         return lvr2::ucharArr();
     }
 
-    lvr2::ucharArr colors(new float[numColors * 3]);
+    lvr2::ucharArr colors(new uchar[numColors * 3]);
 
     // determine where each cell is going to start in the point array
     std::vector<uchar *> cellOutColors;

@@ -40,6 +40,7 @@
 #include "lvr2/registration/OctreeReduction.hpp"
 
 #include "lvr2/algorithm/CleanupAlgorithms.hpp"
+#include "lvr2/algorithm/ColorAlgorithms.hpp"
 #include "lvr2/algorithm/NormalAlgorithms.hpp"
 #include "lvr2/algorithm/Tesselator.hpp"
 #include "lvr2/util/Timestamp.hpp"
@@ -212,9 +213,12 @@ namespace lvr2
 
                 bool retry = false;
                 GridPtr ps_grid;
+                PointsetSurfacePtr<BaseVecT> surface;
                 do
                 {
-                    ps_grid = createChunk(bg, gridbb, voxelSize, minPointsPerChunk, maxPointsPerChunk, retry);
+                    auto [grid, surf] = createChunk(bg, gridbb, voxelSize, minPointsPerChunk, maxPointsPerChunk, retry);
+                    ps_grid = grid;
+                    surface = surf;
                 } while (retry);
 
                 if (!ps_grid)
@@ -238,7 +242,7 @@ namespace lvr2
                     }
                     if (createChunksHdf5 || createChunksPly || create3dTiles)
                     {
-                        processChunk(ps_grid, coord, chunkDirPly, chunkFileHdf5, chunkFile3dTiles, chunkMap);
+                        processChunk(ps_grid, surface, coord, chunkDirPly, chunkFileHdf5, chunkFile3dTiles, chunkMap);
                     }
                 }
             }
@@ -382,7 +386,9 @@ namespace lvr2
                     }
                     if (createChunksHdf5 || createChunksPly || create3dTiles)
                     {
-                        processChunk(ps_grid, coord, chunkDirPly, chunkFileHdf5, chunkFile3dTiles, chunkMap);
+                        // surface is not available in the merge-borders second pass
+                        // (point data was not retained), so no vertex colors here
+                        processChunk(ps_grid, nullptr, coord, chunkDirPly, chunkFileHdf5, chunkFile3dTiles, chunkMap);
                     }
                 }
             }
@@ -535,7 +541,8 @@ namespace lvr2
                 GridPtr ps_grid;
                 do
                 {
-                    ps_grid = createChunk(bg, gridbb, voxelSize, minPointsPerChunk, maxPointsPerChunk, retry);
+                    auto [grid, surf] = createChunk(bg, gridbb, voxelSize, minPointsPerChunk, maxPointsPerChunk, retry);
+                    ps_grid = grid;
                 } while (retry);
 
                 if (!ps_grid)
@@ -568,7 +575,8 @@ namespace lvr2
     }
 
     template<typename BaseVecT>
-    typename LargeScaleReconstruction<BaseVecT>::GridPtr LargeScaleReconstruction<BaseVecT>::createChunk(
+    std::pair<typename LargeScaleReconstruction<BaseVecT>::GridPtr, PointsetSurfacePtr<BaseVecT>>
+    LargeScaleReconstruction<BaseVecT>::createChunk(
         const BigGrid<BaseVecT>& bg,
         const BoundingBox<BaseVecT>& bb,
         float voxelSize,
@@ -579,7 +587,7 @@ namespace lvr2
         retry = false;
         if (bg.estimateSizeofBox(bb) < minPointsPerChunk)
         {
-            return nullptr;
+            return {nullptr, nullptr};
         }
 
         size_t numPoints;
@@ -587,7 +595,7 @@ namespace lvr2
 
         if (!points)
         {
-            return nullptr;
+            return {nullptr, nullptr};
         }
 
         auto p_loader = std::make_shared<PointBuffer>(points, numPoints);
@@ -605,6 +613,16 @@ namespace lvr2
             }
             p_loader->setNormalArray(normals, numNormals);
             hasNormals = true;
+        }
+
+        if (m_options.vertexColors && bg.hasColors())
+        {
+            size_t numColors;
+            lvr2::ucharArr colors = bg.colors(bb, numColors);
+            if (colors && numColors == numPoints)
+            {
+                p_loader->setColorArray(colors, numColors);
+            }
         }
 
         if (!hasNormals && m_options.useGPU)
@@ -668,7 +686,7 @@ namespace lvr2
                         m_options.useGPU = false;
                     }
                     retry = true;
-                    return nullptr;
+                    return {nullptr, nullptr};
                 }
                 gpu_surface.getNormals(normals);
 
@@ -700,15 +718,16 @@ namespace lvr2
 
         if (ps_grid->getCells().empty())
         {
-            return nullptr;
+            return {nullptr, nullptr};
         }
 
-        return ps_grid;
+        return {ps_grid, surface};
     }
 
     template<typename BaseVecT>
     void LargeScaleReconstruction<BaseVecT>::processChunk(
         GridPtr ps_grid,
+        PointsetSurfacePtr<BaseVecT> surface,
         const Vector3i& coord,
         const fs::path& chunkDirPly,
         std::shared_ptr<HighFive::File> chunkFileHdf5,
@@ -745,6 +764,25 @@ namespace lvr2
         std::string name_id = std::to_string(coord.x()) + "_" + std::to_string(coord.y()) + "_" + std::to_string(coord.z());
 
         auto& surfaceMesh = mesh.getSurfaceMesh();
+
+        // Transfer point cloud colors to mesh vertex colors via nearest-neighbor lookup.
+        // The resulting "v:color" property is automatically written by SurfaceMeshIO::write_hdf5_const
+        // and read back by lvr2_3dtiles.
+        if (m_options.vertexColors && surface && surface->pointBuffer() && surface->pointBuffer()->hasColors())
+        {
+            auto colorOpt = calcColorFromPointCloud(mesh, surface);
+            if (colorOpt)
+            {
+                auto vcolor = surfaceMesh.template vertex_property<pmp::Color>("v:color");
+                for (auto v : surfaceMesh.vertices())
+                {
+                    const auto& c = (*colorOpt)[v];
+                    vcolor[v] = pmp::Color(c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f);
+                }
+                lvr2::logout::get() << lvr2::info << "[LargeScaleReconstruction] Vertex colors assigned for chunk " << name_id << lvr2::endl;
+            }
+        }
+
         if (m_options.hasOutput(LSROutput::ChunksHdf5))
         {
             auto group = chunkFileHdf5->createGroup("/chunks/" + name_id);
