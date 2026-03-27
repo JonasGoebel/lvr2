@@ -761,7 +761,7 @@ add_subdirectory(src/liblvr2)
 ###############################################################################
 
 if(NOT MSVC)
-# add_subdirectory(src/tools/lvr2_largescale_reconstruct)
+  add_subdirectory(src/tools/lvr2_largescale_reconstruct)
 endif(NOT MSVC)
 
 if(LVR2_BUILD_TOOLS)
