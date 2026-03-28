@@ -198,6 +198,9 @@ namespace lvr2
 
             // List of chunks that should actually be reconstructed
             std::vector<Vector3i> filteredChunkCoords;
+            // Overlapped bounding boxes for filtered chunks, used to re-query BigGrid colors
+            // in the merge-borders second pass without retaining full surfaces in memory.
+            std::vector<BoundingBox<BaseVecT>> filteredGridBBs;
 
             string layerName = "tsdf_values_" + std::to_string(voxelSize);
             string layerNameTemp = layerName + "_temp";
@@ -229,6 +232,7 @@ namespace lvr2
                 // all checks are done, this partition is ok
                 filteredPartitionBoxes.push_back(partitionBox);
                 filteredChunkCoords.push_back(coord);
+                filteredGridBBs.push_back(gridbb);
 
                 if (m_options.mergeChunkBorders)
                 {
@@ -386,9 +390,29 @@ namespace lvr2
                     }
                     if (createChunksHdf5 || createChunksPly || create3dTiles)
                     {
-                        // surface is not available in the merge-borders second pass
-                        // (point data was not retained), so no vertex colors here
-                        processChunk(ps_grid, nullptr, coord, chunkDirPly, chunkFileHdf5, chunkFile3dTiles, chunkMap);
+                        // Rebuild a minimal color surface from BigGrid for this chunk so that
+                        // processChunk can transfer colors to vertices
+                        PointsetSurfacePtr<BaseVecT> colorSurface;
+                        if (m_options.vertexColors && bg.hasColors())
+                        {
+                            size_t numPoints;
+                            floatArr points = bg.points(filteredGridBBs[i], numPoints, minPointsPerChunk);
+                            if (points && numPoints >= minPointsPerChunk)
+                            {
+                                auto p_loader = std::make_shared<PointBuffer>(points, numPoints);
+                                size_t numColors;
+                                lvr2::ucharArr colors = bg.colors(filteredGridBBs[i], numColors);
+                                if (colors && numColors == numPoints)
+                                {
+                                    p_loader->setColorArray(colors, numColors);
+                                    BaseVecT flipPoint(m_options.flipPoint[0], m_options.flipPoint[1], m_options.flipPoint[2]);
+                                    auto ptr = new AdaptiveKSearchSurface<BaseVecT>(p_loader, "lvr2", m_options.kn, m_options.ki, m_options.kd, m_options.useRansac);
+                                    ptr->setFlipPoint(flipPoint);
+                                    colorSurface.reset(ptr);
+                                }
+                            }
+                        }
+                        processChunk(ps_grid, colorSurface, coord, chunkDirPly, chunkFileHdf5, chunkFile3dTiles, chunkMap);
                     }
                 }
             }
